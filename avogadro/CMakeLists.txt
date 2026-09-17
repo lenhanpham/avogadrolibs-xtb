@@ -55,6 +55,7 @@ add_subdirectory(core)
 add_subdirectory(calc)
 add_subdirectory(io)
 add_subdirectory(quantumio)
+add_subdirectory(xtb)
 # SKBUILD is set for binary wheel
 if(NOT SKBUILD)
   add_subdirectory(command)

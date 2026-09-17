@@ -7,6 +7,7 @@ set(tests
   Elements
   GffData
   GffGraph
+  GffHyb
   GfnTopo
 )
 
