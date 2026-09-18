@@ -184,10 +184,10 @@ bool findRingsThrough(int n, const std::vector<int>& numbers,
       neighbours[a0][40] == 0) {
     return true;
   }
-  // Candidate ring storage with stale tails, mirroring cdum/idum exactly:
-  // one shared member array reused across the whole search; snapshots keep
-  // the full 10-wide column because the reference deduplicates over all 10
-  // slots, stale entries included.
+  // Candidate ring storage mirroring cdum/idum exactly: columns hold
+  // 1-based atom numbers with 0 for empty slots (atoms are 1-based in
+  // the reference); only slots 1:iring are stored, the rest stay zero,
+  // so dedup compares member sets (plus shared zeros).
   struct Candidate
   {
     std::vector<int> column = std::vector<int>(10, 0);
@@ -195,7 +195,8 @@ bool findRingsThrough(int n, const std::vector<int>& numbers,
   };
   std::vector<Candidate> found;
   int nn = static_cast<int>(neighbours[a0].size());
-  // One shared path array across all branches, like the reference's c.
+  // Shared path array like the reference's c, reset to empty at each
+  // branch start (c = 0 inside the m loop).
   std::vector<int> path(10, 0);
   // Each branch m reorders a0's neighbours with branch m first.
   for (int m = 0; m < nn; ++m) {
@@ -218,33 +219,51 @@ bool findRingsThrough(int n, const std::vector<int>& numbers,
     for (int mm = 0; mm < nn; ++mm)
       order[mm] = neighbours[a0][list[mm]];
     // Depth-first walk mirroring the nested i1..i6 loops (rings of 3 to 6
-    // members): path[depth] is the current node; closure to a0 recorded
-    // from depth 1 to 4. Shared path array keeps stale tails like c.
-    // Branches whose m-th neighbour (in the ORIGINAL order) is atom 0 are
-    // skipped like the reference (nb(m,a0) == 1 in 1-based numbering).
+    // members): path[depth] is the current node (1-based); closure to a0
+    // recorded from depth 1 to 4. Branches whose m-th neighbour (in the
+    // ORIGINAL order) is atom 0 are skipped like the reference
+    // (nb(m,a0) == 1 in 1-based numbering).
     if (neighbours[a0][m] == 0)
       continue;
+    std::fill(path.begin(), path.end(), 0);
     std::function<void(int, int)> dfs = [&](int depth, int current) {
       for (int next : work[current]) {
         if (next == current)
           continue;
         if (next == a0) {
-          if (depth >= 1 && depth <= 4 && distinctMembers(path, depth + 1)) {
+          // Closure attempt: distinctness covers the prefix plus the
+          // closing node, like chkrng over c(1..iring).
+          bool distinct = distinctMembers(path, depth + 1);
+          for (int d = 0; d <= depth && distinct; ++d) {
+            if (path[d] == a0 + 1)
+              distinct = false;
+          }
+          if (depth >= 1 && depth <= 4 && distinct) {
             Candidate c;
-            c.column = path;
+            // Store only slots 1:iring like cdum(1:iring,kk); the rest
+            // stays zero, so dedup sees member sets (plus shared zeros).
+            for (int d = 0; d <= depth; ++d)
+              c.column[d] = path[d];
             // The closing node is stored explicitly like c(iring) = a0.
-            c.column[depth + 1] = a0;
+            c.column[depth + 1] = a0 + 1;
             c.size = depth + 2;
             found.push_back(c);
             if (static_cast<int>(found.size()) >= 500)
               return;
           }
-          // Descending through a0 can never close validly again (a0 would
-          // repeat), so skipping it is equivalent to the reference.
+          // The reference descends through a0 freely (only chkrng
+          // rejects repeats at record time); replicated for identical
+          // control flow.
+          if (depth + 1 <= 4) {
+            path[depth + 1] = a0 + 1;
+            dfs(depth + 1, a0);
+            if (static_cast<int>(found.size()) >= 500)
+              return;
+          }
           continue;
         }
         if (depth + 1 <= 4) {
-          path[depth + 1] = next;
+          path[depth + 1] = next + 1;
           dfs(depth + 1, next);
           if (static_cast<int>(found.size()) >= 500)
             return;
@@ -254,12 +273,12 @@ bool findRingsThrough(int n, const std::vector<int>& numbers,
     for (int a1 : order) {
       if (a1 == a0)
         continue;
-      path[0] = a1;
+      path[0] = a1 + 1;
       dfs(0, a1);
     }
   }
-  // Deduplicate by atom-set equality over the full 10-wide columns,
-  // mirroring the reference (stale tails included).
+  // Deduplicate by atom-set equality over the stored columns,
+  // mirroring the reference (1-based values with 0 for empty slots).
   std::vector<char> same(found.size(), 0);
   for (size_t i = 0; i < found.size(); ++i) {
     for (size_t j = i + 1; j < found.size(); ++j) {
@@ -267,12 +286,12 @@ bool findRingsThrough(int n, const std::vector<int>& numbers,
         continue;
       if (same[j])
         continue;
-      std::vector<char> inI(n, 0), inJ(n, 0);
+      std::vector<char> inI(n + 1, 0), inJ(n + 1, 0);
       for (int d = 0; d < 10; ++d) {
         int a = found[i].column[d], b = found[j].column[d];
-        if (a >= 0 && a < n)
+        if (a >= 0 && a <= n)
           inI[a] = 1;
-        if (b >= 0 && b < n)
+        if (b >= 0 && b <= n)
           inJ[b] = 1;
       }
       if (inI == inJ)
@@ -288,7 +307,7 @@ bool findRingsThrough(int n, const std::vector<int>& numbers,
       break;
     Ring ring;
     for (int d = 0; d < found[i].size; ++d)
-      ring.members.push_back(found[i].column[d]);
+      ring.members.push_back(found[i].column[d] - 1);
     // Hetero code, mirroring the cout(m,19) computation.
     double sum = 0.0;
     for (int a : ring.members)

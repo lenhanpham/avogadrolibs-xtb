@@ -81,6 +81,32 @@ TEST(GffGraphTest, benzeneRings)
   EXPECT_EQ(smallestRingBond(r0, r1, 0, 1), 6);
 }
 
+TEST(GffGraphTest, cyclopropaneDedup)
+{
+  // Triangle C0-C1-C2 with H leaves, 0-based. The triangle is found in
+  // both rotations; dedup must merge them into exactly one ring per
+  // carbon (verified against real getring36).
+  std::vector<int> numbers = { 6, 1, 1, 6, 1, 1, 6, 1, 1 };
+  std::vector<std::vector<int>> nb = { { 1, 2, 3, 6 }, { 0 }, { 0 },
+                                       { 0, 4, 5, 6 }, { 3 }, { 3 },
+                                       { 0, 3, 7, 8 }, { 6 }, { 6 } };
+  Environment env;
+  for (int a0 : { 0, 3, 6 }) {
+    std::vector<Ring> rings;
+    ASSERT_TRUE(findRingsThrough(9, numbers, nb, a0, rings, env));
+    ASSERT_EQ(rings.size(), 1u);
+    EXPECT_EQ(smallestRingThrough(rings), 3);
+  }
+  std::vector<Ring> r0, r3, rh;
+  ASSERT_TRUE(findRingsThrough(9, numbers, nb, 0, r0, env));
+  EXPECT_EQ(r0[0].members, std::vector<int>({ 3, 6, 0 }));
+  ASSERT_TRUE(findRingsThrough(9, numbers, nb, 3, r3, env));
+  EXPECT_EQ(smallestRingBond(r0, r3, 0, 3), 3);
+  ASSERT_TRUE(findRingsThrough(9, numbers, nb, 1, rh, env));
+  EXPECT_TRUE(rh.empty());
+  EXPECT_EQ(smallestRingBond(r0, rh, 0, 1), 0);
+}
+
 TEST(GffGraphTest, waterCoordination)
 {
   const int n = 3;

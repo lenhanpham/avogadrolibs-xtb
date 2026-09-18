@@ -5,9 +5,24 @@ set(tests
   Coordination
   Eeq
   Elements
+  GffAngle
+  GffBond
+  GffEgBond
+  GffEgNonbond
   GffData
+  GffDisp
+  GffHb
+  GffHbSet
+  GffSetup
+  GffDriver
+  GffEeq
+  GffNb
   GffGraph
+  GffHuckel
   GffHyb
+  GffOop
+  GffTorsion
+  GffVbond
   GfnTopo
 )
 

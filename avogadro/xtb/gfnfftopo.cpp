@@ -206,5 +206,92 @@ bool topologyCharges(int n, const std::vector<double>& pairPacked,
   return true;
 }
 
+bool bondPairFlags(int n, const std::vector<std::vector<int>>& neighbours,
+                   std::vector<int>& pairFlags, Environment& env)
+{
+  if (n <= 0) {
+    env.error("empty bond pair setup", "bondPairFlags");
+    return false;
+  }
+  // Working copy with explicit counts (nb(numnb,i) slots, 0d: one cell),
+  // zero-padded like the reference arrays.
+  std::vector<std::vector<int>> orig = neighbours;
+  std::vector<std::vector<int>> nbr(n, std::vector<int>(maxNeighbors, 0));
+  std::vector<int> counts(n);
+  for (int i = 0; i < n; ++i) {
+    for (size_t m = 0; m < orig[i].size() && m < (size_t)maxNeighbors; ++m)
+      nbr[i][m] = orig[i][m];
+    counts[i] = static_cast<int>(orig[i].size());
+  }
+  std::vector<int> origCounts(n);
+  for (int i = 0; i < n; ++i)
+    origCounts[i] = static_cast<int>(orig[i].size());
+  // Paired-bond filter over ORIGINAL neighbours (loop bound fixed at
+  // entry): drop k from i's list when k does not list i back, shifting
+  // slots j..numnb-2 up from the ORIGINAL list (verbatim bound, which
+  // fails for numnb-1 neighbours like the reference). Removed pairs are
+  // saved for the tmpp restore.
+  struct Saved
+  {
+    int k, i;
+  };
+  std::vector<Saved> saved;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < origCounts[i]; ++j) {
+      int k = orig[i][j];
+      bool hasnb = false;
+      for (int m = 0; m < origCounts[k]; ++m) {
+        if (orig[k][m] == i) {
+          hasnb = true;
+          break;
+        }
+      }
+      if (!hasnb) {
+        for (int l = j; l < maxNeighbors - 2; ++l)
+          nbr[i][l] = (l + 1 < origCounts[i]) ? orig[i][l + 1] : 0;
+        counts[i] -= 1;
+        saved.push_back({ k, i });
+      }
+    }
+  }
+  pairFlags.assign(n * n, 0);
+  auto at = [&](int row, int col) -> int& { return pairFlags[row * n + col]; };
+  for (int i = 0; i < n; ++i) {
+    for (int m = 0; m < counts[i]; ++m)
+      at(nbr[i][m], i) = 1;
+    for (int cval = 1; cval <= 2; ++cval) {
+      // countf: (l, 1) with pair[l][i] == cval, l ascending.
+      std::vector<int> nbi;
+      for (int l = 0; l < n; ++l) {
+        if (at(l, i) == cval)
+          nbi.push_back(l);
+      }
+      for (int inew : nbi) {
+        for (int m = 0; m < counts[inew]; ++m) {
+          int j = nbr[inew][m];
+          if (at(j, i) != 0)
+            continue;
+          if (j == i)
+            continue;
+          at(j, i) = cval + 1;
+        }
+      }
+    }
+  }
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+      if (at(j, i) == 0 && j != i)
+        at(j, i) = 5;
+    }
+  }
+  // tmpp restore: deleted bonds count as bonded again, both directions
+  // (iTrNeg(1) == 1 in 0d).
+  for (const auto& s : saved) {
+    at(s.k, s.i) = 1;
+    at(s.i, s.k) = 1;
+  }
+  return true;
+}
+
 } // namespace Xtb
 } // namespace Avogadro

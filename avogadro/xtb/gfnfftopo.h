@@ -32,6 +32,15 @@ inline int packedIndex(int i, int j)
 // Maximum neighbours per atom in the xtb lists (numnb).
 constexpr int maxNeighbors = 42;
 
+// Bond-pair flags mirroring nbondmat_pbc (0d, single cell): unpaired
+// bonds filtered out with the bounded shift (restored at the end, like
+// the tmpp mechanism), direct pairs set to 1, 2nd/3rd neighbours via
+// countf order, distant pairs to 5. neighbours holds 0-based adjacency
+// in nb order; pairFlags receives n x n flags (row = second index like
+// pair(j,i) in the reference).
+bool bondPairFlags(int n, const std::vector<std::vector<int>>& neighbours,
+                   std::vector<int>& pairFlags, Environment& env);
+
 // Neighbor-list fill, mirroring fillnb/getnb for one pass:
 //   icase 1: full list (metal-scaled radii), written to full
 //   icase 2: no hypervalent heavy atoms, written to plain

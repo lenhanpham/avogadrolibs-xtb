@@ -12,7 +12,23 @@
 #include "gfnffsetup.h"
 
 #include "constants.h"
+#include "coordination.h"
+#include "eeq.h"
+#include "environment.h"
+#include "gffgraph.h"
+#include "gfnffangle.h"
+#include "gfnffbonds.h"
+#include "gfnffdisp.h"
+#include "gfnffegbond.h"
+#include "gfnffegnonbond.h"
+#include "gfnffhb.h"
+#include "gfnffhuckel.h"
+#include "gfnffhyb.h"
 #include "gfnffparams.h"
+#include "gfnffrab.h"
+#include "gfnfftopo.h"
+#include "gfnfftorsion.h"
+#include "gfnffvbond.h"
 
 #include <cmath>
 
@@ -159,6 +175,7 @@ static void setGffParams(GffData& param, GffGenerator& gen)
   param.angleCutTNci = 0.305;
   param.repScaleB = 1.7583f;
   param.repScaleN = 0.4270;
+  param.dispScale = 1.0; // set%dispscale default (gfnff_setup copies it)
   param.hbAngleCut = 49.0f;
   param.hbShortCut = 22.0f;
   param.xbAngleCut = 70.0f;
@@ -259,6 +276,398 @@ bool loadGffParams(int version, GffData& param, GffGenerator& gen)
   }
   makeDefaultGenerator(gen);
   setGffParams(param, gen);
+  return true;
+}
+
+HbParams makeHbParams(const GffData& param)
+{
+  HbParams hp;
+  hp.hbacut = param.hbAngleCut;
+  hp.hblongcut = param.hbLongCut;
+  hp.hbscut = param.hbShortCut;
+  hp.hbalp = param.hbAlp;
+  hp.hbst = param.hbSt;
+  hp.hbsf = param.hbSf;
+  hp.hbabmix = param.hbAbMix;
+  hp.hbnbcut = param.hbNbCut;
+  hp.xbacut = param.xbAngleCut;
+  hp.xbscut = param.xbShortCut;
+  hp.xbst = param.xbSt;
+  hp.xbsf = param.xbSf;
+  hp.hblongcutXb = param.hbLongCutXb;
+  hp.xhaciGlobAbh = param.xhAciGlobAbH;
+  hp.xhaciCoh = param.xhAciCoh;
+  hp.torsHb = param.torsHb;
+  hp.bendHb = param.bendHb;
+  return hp;
+}
+
+bool gfnffSetup0d(int version, const std::vector<int>& numbers,
+                  const std::vector<double>& xyz, double totalCharge,
+                  double accuracy, DriverInput& in, GffData& param,
+                  GffGenerator& gen, Environment& env)
+{
+  int n = static_cast<int>(numbers.size());
+  if (n <= 0 || static_cast<int>(xyz.size()) != 3 * n) {
+    env.error("empty setup geometry", "gfnffSetup0d");
+    return false;
+  }
+  if (!loadGffParams(version, param, gen))
+    return false;
+  std::vector<int> metal(gffElements), group(gffElements);
+  for (int i = 0; i < gffElements; ++i) {
+    metal[i] = gffMetal[i];
+    group[i] = gffGroup[i];
+  }
+  double dispThr, cnThr, repThr, hbThr1, hbThr2;
+  gffThresholds(accuracy, dispThr, cnThr, repThr, hbThr1, hbThr2);
+
+  // Neighbour pipeline (hyb-test pattern, qa = 0 first pass).
+  std::vector<double> cn0(n);
+  for (int i = 0; i < n; ++i)
+    cn0[i] = param.normCn[numbers[i] - 1];
+  std::vector<double> rtmp;
+  gfnffBondGuesses(n, numbers, cn0, rtmp);
+  std::vector<double> qa0(n, 0.0);
+  scaleBondGuesses(n, numbers, qa0, metal, gen.rShrink, rtmp);
+  std::vector<double> dist(n * n, 0.0);
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < n; ++j) {
+      double dx = xyz[3 * j] - xyz[3 * i];
+      double dy = xyz[3 * j + 1] - xyz[3 * i + 1];
+      double dz = xyz[3 * j + 2] - xyz[3 * i + 2];
+      dist[i * n + j] = std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+  }
+  std::vector<double> mch0(n, 0.0);
+  std::vector<int> nbf, nbfc, nb, nbc, nbm, nbmc, full(n, 0);
+  fillNeighborList(n, numbers, rtmp, dist, mch0.data(), 1, 1.25, 1.0,
+                   gffMetal.data(), gffGroup.data(), gffNormCn.data(),
+                   full.data(), 1, nbf, nbfc);
+  for (int i = 0; i < n; ++i)
+    full[i] = nbfc[i];
+  fillNeighborList(n, numbers, rtmp, dist, mch0.data(), 2, 1.25, 1.0,
+                   gffMetal.data(), gffGroup.data(), gffNormCn.data(),
+                   full.data(), 1, nb, nbc);
+  fillNeighborList(n, numbers, rtmp, dist, mch0.data(), 3, 1.25, 1.0,
+                   gffMetal.data(), gffGroup.data(), gffNormCn.data(),
+                   full.data(), 1, nbm, nbmc);
+  std::vector<int> hyb, itag;
+  if (!assignHybridization(n, numbers, xyz, nbf, nbfc, nb, nbc, nbm, nbmc,
+                           qa0, metal.data(), group.data(), 160.0, 1, true,
+                           hyb, itag, env))
+    return false;
+  std::vector<std::vector<int>> neighbours(n);
+  for (int i = 0; i < n; ++i) {
+    for (int k = 0; k < nbfc[i]; ++k)
+      neighbours[i].push_back(nbf[i * maxNeighbors + k]);
+  }
+  std::vector<int> imetal =
+    effectiveMetals(n, numbers, nbc, 1, metal.data(), group.data());
+  PiSystem pi = buildPiSystem(n, numbers, hyb, nb, nbc, 1);
+  std::vector<int> piFlags(n, 0);
+  for (int p : pi.piIndex) {
+    if (p >= 0 && p < n)
+      piFlags[p] = 1;
+  }
+  std::vector<int> counts(n);
+  for (int i = 0; i < n; ++i)
+    counts[i] = static_cast<int>(neighbours[i].size());
+  std::vector<int> firstNb(n, -1);
+  for (int i = 0; i < n; ++i) {
+    if (!neighbours[i].empty())
+      firstNb[i] = neighbours[i][0];
+  }
+
+  // EEQ xi + initial parameters.
+  std::vector<double> dxi, chi0, gam0, alp0;
+  if (!eeqXiCorrections(n, numbers, itag, imetal, piFlags, neighbours,
+                        counts, group.data(), dxi, env))
+    return false;
+  if (!eeqInitialParams(n, numbers, param.chi, param.gam, param.alp,
+                        param.cnf, imetal, counts, gen.cnMax, gen.mchiShift,
+                        dxi, chi0, gam0, alp0, env))
+    return false;
+
+  // Coordination numbers + topology (goedeckera) charges for the setup.
+  int npair = n * (n + 1) / 2;
+  std::vector<double> srab(npair, 0.0);
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j <= i; ++j)
+      srab[packedIndex(i, j)] = dist[i * n + j];
+  }
+  std::vector<double> rcov(gffElements);
+  for (int z = 0; z < gffElements; ++z)
+    rcov[z] = covalentRadiusD3(z + 1);
+  std::vector<double> cn, dlogCn;
+  gffCoordinationNumber(n, numbers, xyz, srab, rcov, gen.cnMax, cnThr, cn,
+                        dlogCn);
+  std::vector<float> rabdF;
+  std::vector<double> rtmpP;
+  estimateBondLengths(n, numbers, nbc, nb, param.rad, gen.rfgoed1,
+                      gen.tdistThr, rabdF, rtmpP);
+  std::vector<int> fragOfAtom;
+  int nfrag = findFragments(neighbours, fragOfAtom);
+  if (nfrag < 1)
+    return false;
+  std::vector<double> fragCharges(nfrag, 0.0);
+  fragCharges[0] = totalCharge;
+  std::vector<double> qaEst;
+  double esEst = 0.0;
+  if (!topologyCharges(n, rtmpP, chi0, gam0, alp0, nfrag, fragOfAtom,
+                       fragCharges, env, qaEst, esEst))
+    return false;
+
+  // Gamma + final EEQ parameters from the setup charges.
+  std::vector<double> dgam, chieeq, gameeq, alpeeq;
+  if (!eeqGammaCorrections(n, numbers, hyb, imetal, piFlags, neighbours,
+                           group.data(), qaEst, dgam, env))
+    return false;
+  if (!eeqFinalParams(n, numbers, hyb, imetal, piFlags, neighbours,
+                      param.chi, param.gam, param.alp, dxi, dgam, qaEst,
+                      group.data(), chieeq, gameeq, alpeeq, env))
+    return false;
+
+  // HB strengths, bpair flags, bonds + types.
+  std::vector<double> hbBas, hbAci;
+  if (!hbBasicity(n, numbers, itag, neighbours, counts, param.xhBas, hbBas,
+                  env))
+    return false;
+  if (!hbAcidity(n, numbers, neighbours, hyb, piFlags, param.xhAci, hbAci,
+                 env))
+    return false;
+  std::vector<int> bpair;
+  if (!bondPairFlags(n, neighbours, bpair, env))
+    return false;
+  std::vector<Bond> bonds = buildBondList(n, nbf, nbfc, 1);
+  std::vector<std::pair<int, int>> abonds;
+  for (const auto& b : bonds)
+    abonds.emplace_back(b.first, b.second);
+
+  // Ring lists over the icase-3 lists + per-bond ring fields, mirroring
+  // the nbrngs/getring36 setup and the ringsbond/ringsatom queries.
+  std::vector<std::vector<int>> nbmNeighbours(n);
+  for (int i = 0; i < n; ++i) {
+    for (int k = 0; k < nbmc[i]; ++k)
+      nbmNeighbours[i].push_back(nbm[i * maxNeighbors + k]);
+  }
+  std::vector<std::vector<Ring>> ringsPerAtom(n);
+  for (int i = 0; i < n; ++i) {
+    if (!findRingsThrough(n, numbers, nbmNeighbours, i, ringsPerAtom[i],
+                          env))
+      return false;
+  }
+
+  // Iterative Hueckel pi bond orders (post-Hueckel piadr below).
+  int npairPi = n * (n + 1) / 2;
+  std::vector<double> pibo(abonds.size(), 0.0), pbo(npairPi, 0.0);
+  std::vector<int> piadrOut(n, 0);
+  {
+    std::vector<double> hdiag(gen.hdiag.begin(), gen.hdiag.end());
+    std::vector<double> hoffdiag(gen.hoffdiag.begin(), gen.hoffdiag.end());
+    if (!huckelPiBondOrders(n, numbers, hyb, itag, qaEst, xyz, abonds,
+                            pi.piIndex, pi.fragOfPi, pi.fragments, hdiag,
+                            gen.hueckelP3, gen.pilpf, hoffdiag, gen.hIter,
+                            gen.hTriple, gen.maxHIter, pibo, pbo, piadrOut,
+                            env))
+      return false;
+  }
+  std::vector<int> piPost;
+  for (int i = 0; i < n; ++i) {
+    if (piadrOut[i] != 0)
+      piPost.push_back(i);
+  }
+  std::vector<int> btypes =
+    assignBondTypes(bonds, numbers, hyb, itag, piPost, imetal,
+                    group.data());
+
+  // HB perception + triplets + maps + geometry lists.
+  HbDonorLists donors;
+  if (!hbDonorLists(n, numbers, hyb, piFlags, qaEst, neighbours, firstNb,
+                    group.data(), param.xhBas, gen.hQaThr, gen.qaBThr,
+                    bpair, hbBas, hbAci, donors, env))
+    return false;
+  std::vector<HbBondTriplet> triplets;
+  if (!hbBondTriplets(n, donors.hatAB, donors.hatH, xyz, hbThr1, bpair,
+                      triplets, env))
+    return false;
+  HbBondMaps bondHb;
+  if (!hbAhbMaps(n, numbers, abonds, triplets, bondHb, env))
+    return false;
+  std::vector<HbTriple> hb1, hb2;
+  std::vector<XbTriple> xb;
+  if (!hbTripletLists(n, xyz, donors.hatAB, donors.hatH, donors, bpair,
+                      hbThr1, hbThr2, hb1, hb2, xb, env))
+    return false;
+
+  // Non-bonded tables from the setup charges.
+  std::vector<double> alphanb, zetac6dummy;
+  if (!buildNonbondedTables(n, numbers, qaEst, counts, param.repan, metal,
+                            gen.nRepScal, gen.qRepScal, gen.hhFac,
+                            gen.hh13Rep, gen.hh14Rep, bpair, alphanb,
+                            zetac6dummy, env))
+    return false;
+
+  // vbond terms (pibo + post-Hueckel pi + ring fields from the
+  // ringsbond/ringsatom queries).
+  std::vector<double> mchar(n);
+  metallicCharacter(n, numbers, param.en, cn, dlogCn, mchar);
+  std::vector<VbondBond> vb;
+  for (size_t b = 0; b < bonds.size(); ++b) {
+    VbondBond bb;
+    bb.first = bonds[b].first;
+    bb.second = bonds[b].second;
+    bb.guess = rtmpP[packedIndex(bb.first, bb.second)];
+    bb.pibo = pibo[b];
+    bb.ring = smallestRingBond(ringsPerAtom[bb.first],
+                               ringsPerAtom[bb.second], bb.first, bb.second);
+    bb.ringFirst = smallestRingThrough(ringsPerAtom[bb.first]);
+    bb.ringSecond = smallestRingThrough(ringsPerAtom[bb.second]);
+    bb.coordFirst = static_cast<int>(neighbours[bb.first].size());
+    bb.coordSecond = static_cast<int>(neighbours[bb.second].size());
+    vb.push_back(bb);
+  }
+  std::vector<VbondAtom> va(n);
+  for (int i = 0; i < n; ++i) {
+    va[i].element = numbers[i];
+    va[i].hyb = hyb[i];
+    va[i].charge = qaEst[i];
+    va[i].itag = itag[i];
+    va[i].imetal = imetal[i];
+    va[i].pi = piadrOut[i];
+    va[i].mchar = mchar[i];
+  }
+  std::vector<int> row6(n);
+  for (int i = 0; i < n; ++i)
+    row6[i] = elementRow6(numbers[i]);
+  std::vector<VbondTerm> vterms;
+  std::vector<int> outBtypes;
+  if (!buildVbondTerms(vb, va, neighbours, numbers, group, metal, param.en,
+                       param.bond, row6, param, gen, vterms, outBtypes, env))
+    return false;
+
+  // Bends (rings from perception; pbo from Hueckel).
+  std::vector<Angle> angles;
+  if (!buildAngleList(n, neighbours, numbers, xyz, param.angl, param.angl2,
+                      gen.fcThr, param.metal, angles, env))
+    return false;
+  std::vector<AngleAtom> aatoms(n);
+  for (int i = 0; i < n; ++i) {
+    aatoms[i].element = numbers[i];
+    aatoms[i].hyb = hyb[i];
+    aatoms[i].itag = itag[i];
+    aatoms[i].imetal = imetal[i];
+  }
+  std::vector<AngleTerm> aterms;
+  if (!buildAngleTerms(angles, aatoms, neighbours, ringsPerAtom, pbo, group,
+                       metal, param.angl, param.angl2, param, gen, aterms,
+                       env))
+    return false;
+
+  // Torsions (Hueckel pibo, post-Hueckel pi, setup charges in fqq).
+  std::vector<TorsionBond> tb;
+  for (size_t b = 0; b < bonds.size(); ++b) {
+    TorsionBond t;
+    t.first = bonds[b].first;
+    t.second = bonds[b].second;
+    t.btype = btypes[b];
+    t.pibo = pibo[b];
+    tb.push_back(t);
+  }
+  std::vector<TorsionAtom> tatoms(n);
+  for (int i = 0; i < n; ++i) {
+    tatoms[i].element = numbers[i];
+    tatoms[i].hyb = hyb[i];
+    tatoms[i].charge = qaEst[i];
+    tatoms[i].imetal = imetal[i];
+    tatoms[i].pi = piadrOut[i];
+  }
+  std::vector<Torsion> torsions;
+  std::vector<TorsionTerm> tterms;
+  if (!buildTorsions(tb, tatoms, neighbours, xyz, ringsPerAtom, group,
+                     metal, param.tors, param.tors2, param, gen, torsions,
+                     tterms, env))
+    return false;
+
+  // Bonded-ATM triples over bpair == 3 (ini b3list rule, 0d).
+  struct Triple
+  {
+    int i, j, k;
+  };
+  std::vector<Triple> b3;
+  for (int i = 0; i < n; ++i) {
+    for (int j = 0; j < i; ++j) {
+      if (bpair[j * n + i] != 3)
+        continue;
+      for (int k : neighbours[j]) {
+        if (i == k || j == k)
+          continue;
+        b3.push_back({ i, j, k });
+      }
+      for (int k : neighbours[i]) {
+        if (i == k || j == k)
+          continue;
+        b3.push_back({ i, j, k });
+      }
+    }
+  }
+
+  // Assemble the driver input.
+  in = DriverInput();
+  in.numbers = numbers;
+  in.xyz = xyz;
+  in.accuracy = accuracy;
+  in.totalCharge = totalCharge;
+  for (size_t b = 0; b < bonds.size(); ++b) {
+    DriverBond db;
+    db.first = bonds[b].first;
+    db.second = bonds[b].second;
+    db.shift = vterms[b].shift;
+    db.steepness = vterms[b].steepness;
+    db.prefactor = vterms[b].prefactor;
+    in.bonds.push_back(db);
+  }
+  for (size_t a = 0; a < angles.size(); ++a) {
+    DriverBend db;
+    db.center = angles[a].center;
+    db.first = angles[a].first;
+    db.second = angles[a].second;
+    db.equilibrium = aterms[a].equilibrium;
+    db.forceConstant = aterms[a].forceConstant;
+    in.bends.push_back(db);
+  }
+  for (size_t t = 0; t < torsions.size(); ++t) {
+    DriverTorsion dt;
+    dt.i = torsions[t].outer1;
+    dt.j = torsions[t].center1;
+    dt.k = torsions[t].center2;
+    dt.l = torsions[t].outer2;
+    dt.multiplicity = torsions[t].multiplicity;
+    dt.phase = tterms[t].phase;
+    dt.forceConstant = tterms[t].forceConstant;
+    in.torsions.push_back(dt);
+  }
+  for (const auto& t : b3)
+    in.triples.push_back({ t.i, t.j, t.k });
+  for (const auto& t : hb1)
+    in.hb1.push_back({ t.a, t.b, t.h });
+  for (const auto& t : hb2)
+    in.hb2.push_back({ t.a, t.b, t.h });
+  for (const auto& t : xb)
+    in.xb.push_back({ t.a, t.b, t.x });
+  in.neighbours = neighbours;
+  in.chieeq = chieeq;
+  in.gameeq = gameeq;
+  in.alpeeq = alpeeq;
+  in.qa = qaEst;
+  in.hbBas = hbBas;
+  in.hbAci = hbAci;
+  in.nrHb = bondHb.nrHb;
+  in.bondHb = bondHb;
+  in.fragOfAtom = fragOfAtom;
+  in.fragCharges = fragCharges;
+  in.nonbonded.alphanb = alphanb;
+  in.nonbonded.bpair = bpair;
   return true;
 }
 

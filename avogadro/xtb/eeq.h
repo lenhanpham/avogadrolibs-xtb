@@ -78,6 +78,89 @@ bool solveSymmetric(std::vector<double>& mat, std::vector<double>& rhs,
 // Returns false when singular.
 bool invertSymmetric(std::vector<double>& mat, int n);
 
+// N/O/F/S/Cl predicate mirroring nofs().
+inline bool isNofs(int atomicNumber)
+{
+  int z = atomicNumber;
+  return z == 7 || z == 8 || z == 9 || z == 16 || z == 17;
+}
+
+// Amide predicate mirroring amide() (ini2, 0d): N with hyb 3 and a pi
+// flag, bonded to exactly one pi carbon that itself bonds a terminal pi
+// oxygen. neighbours holds 0-based adjacency (single cell); piFlags the
+// piadr map (1 = pi, 0 = not).
+bool isAmide(int n, const std::vector<int>& numbers,
+             const std::vector<int>& hyb,
+             const std::vector<std::vector<int>>& neighbours,
+             const std::vector<int>& piFlags, int atom);
+
+// Amide-H predicate mirroring amideH() (ini2, 0d): degree-1 atom whose
+// sole neighbour is an amide nitrogen with exactly one sp3-carbon
+// neighbour.
+bool isAmideHydrogen(int n, const std::vector<int>& numbers,
+                     const std::vector<int>& hyb,
+                     const std::vector<std::vector<int>>& neighbours,
+                     const std::vector<int>& piFlags, int atom);
+
+// EEQ xi corrections mirroring the ini dxi loop (0d): B/C/O/group-6/
+// group-7 rules from hybridization, tags, pi flags, neighbour element
+// counts and first-neighbour identities. itag/imetal parallel hyb;
+// group/metal are element tables; counts holds neighbour counts.
+// Unsuffixed literals are single-precision widened on use (int * float
+// products stay in float), like the reference.
+bool eeqXiCorrections(
+  int n, const std::vector<int>& numbers,
+  const std::vector<int>& itag, const std::vector<int>& imetal,
+  const std::vector<int>& piFlags,
+  const std::vector<std::vector<int>>& neighbours,
+  const std::vector<int>& counts, const int* group, std::vector<double>& dxi,
+  Environment& env);
+
+// First EEQ parameters mirroring the ini block (0d): chieeq from -chi +
+// dxi + cnf * sqrt(min(count, cnmax)), gameeq = gam, alpeeq = alp^2,
+// with the mchishift (double) reduction for imetal == 2.
+bool eeqInitialParams(int n, const std::vector<int>& numbers,
+                      const std::vector<double>& chi,
+                      const std::vector<double>& gam,
+                      const std::vector<double>& alp,
+                      const std::vector<double>& cnf,
+                      const std::vector<int>& imetal,
+                      const std::vector<int>& counts, double cnMax,
+                      double mchiShift, const std::vector<double>& dxi,
+                      std::vector<double>& chieeq,
+                      std::vector<double>& gameeq,
+                      std::vector<double>& alpeeq, Environment& env);
+
+// Third-order gamma corrections mirroring the ini dgam loop (0d):
+// element/hyb/metal/group rules scaled by the topology charges qa,
+// using isAmide() for the amide branch. ff literals are
+// single-precision widened on use.
+bool eeqGammaCorrections(
+  int n, const std::vector<int>& numbers, const std::vector<int>& hyb,
+  const std::vector<int>& imetal, const std::vector<int>& piFlags,
+  const std::vector<std::vector<int>>& neighbours, const int* group,
+  const std::vector<double>& qa, std::vector<double>& dgam,
+  Environment& env);
+
+// Final atomic EEQ parameters mirroring the ini block (0d): chieeq from
+// -chi + dxi with the amide-H -0.02 (single-widened) reduction, gameeq
+// from gam + dgam, alpeeq from (alp + ff * qa)^2 with the element/metal
+// ff rules (single-widened).
+bool eeqFinalParams(int n, const std::vector<int>& numbers,
+                    const std::vector<int>& hyb,
+                    const std::vector<int>& imetal,
+                    const std::vector<int>& piFlags,
+                    const std::vector<std::vector<int>>& neighbours,
+                    const std::vector<double>& chi,
+                    const std::vector<double>& gam,
+                    const std::vector<double>& alp,
+                    const std::vector<double>& dxi,
+                    const std::vector<double>& dgam,
+                    const std::vector<double>& qa, const int* group,
+                    std::vector<double>& chieeq,
+                    std::vector<double>& gameeq, std::vector<double>& alpeeq,
+                    Environment& env);
+
 } // namespace Xtb
 } // namespace Avogadro
 

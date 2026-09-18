@@ -9,7 +9,18 @@ avogadro_headers(Xtb
   environment.h
   gfn0params.h
   gfnffdata.h
+  gfnffangle.h
+  gfnffbonds.h
+  gfnffegbond.h
+  gfnffegnonbond.h
+  gfnffdisp.h
+  gfnffhb.h
+  gfnffdriver.h
+  gfnffoop.h
   gfnffhyb.h
+  gfnffhuckel.h
+  gfnfftorsion.h
+  gfnffvbond.h
   gfnffparams.h
   gfnffsetup.h
   gfnfftopo.h
@@ -28,9 +39,20 @@ target_sources(Xtb PRIVATE
   gfn0params.cpp
   gfnffparams.cpp
   gfnffsetup.cpp
+  gfnffangle.cpp
+  gfnffegbond.cpp
+  gfnffegnonbond.cpp
+  gfnffdisp.cpp
+  gfnffhb.cpp
+  gfnffdriver.cpp
+  gfnffoop.cpp
   gfnfftopo.cpp
   gfnffrab.cpp
   gfnffhyb.cpp
+  gfnffbonds.cpp
+  gfnffhuckel.cpp
+  gfnfftorsion.cpp
+  gfnffvbond.cpp
   gffgraph.cpp
 )
 

@@ -336,5 +336,244 @@ bool eeqCharges(const std::vector<int>& numbers,
   return true;
 }
 
+bool isAmide(int n, const std::vector<int>& numbers,
+             const std::vector<int>& hyb,
+             const std::vector<std::vector<int>>& neighbours,
+             const std::vector<int>& piFlags, int atom)
+{
+  if (n <= 0 || atom < 0 || atom >= n)
+    return false;
+  if (piFlags[atom] == 0 || hyb[atom] != 3 || numbers[atom] != 7)
+    return false;
+  int nc = 0, ic = -1;
+  for (int j : neighbours[atom]) {
+    if (numbers[j] == 6 && piFlags[j] != 0) {
+      ++nc;
+      ic = j;
+    }
+  }
+  if (nc != 1)
+    return false;
+  int no = 0;
+  for (int j : neighbours[ic]) {
+    if (numbers[j] == 8 && piFlags[j] != 0 &&
+        static_cast<int>(neighbours[j].size()) == 1)
+      ++no;
+  }
+  return no == 1;
+}
+
+bool isAmideHydrogen(int n, const std::vector<int>& numbers,
+                     const std::vector<int>& hyb,
+                     const std::vector<std::vector<int>>& neighbours,
+                     const std::vector<int>& piFlags, int atom)
+{
+  if (n <= 0 || atom < 0 || atom >= n)
+    return false;
+  // 0d: single cell, so the sole neighbour is in cell 1 like nbLoc finds.
+  if (neighbours[atom].size() != 1)
+    return false;
+  int nn = neighbours[atom][0];
+  if (!isAmide(n, numbers, hyb, neighbours, piFlags, nn))
+    return false;
+  int nc = 0;
+  for (int j : neighbours[nn]) {
+    if (numbers[j] == 6 && hyb[j] == 3)
+      ++nc;
+  }
+  return nc == 1;
+}
+
+bool eeqXiCorrections(
+  int n, const std::vector<int>& numbers,
+  const std::vector<int>& itag, const std::vector<int>& imetal,
+  const std::vector<int>& piFlags,
+  const std::vector<std::vector<int>>& neighbours,
+  const std::vector<int>& counts, const int* group, std::vector<double>& dxi,
+  Environment& env)
+{
+  if (n <= 0) {
+    env.error("empty EEQ xi setup", "eeqXiCorrections");
+    return false;
+  }
+  (void)imetal;
+  dxi.assign(n, 0.0);
+  for (int i = 0; i < n; ++i) {
+    int ati = numbers[i];
+    int nn = counts[i];
+    if (nn == 0)
+      continue;
+    // First neighbour in nb order (0d: cell 1 like jth_nb).
+    int ji = neighbours[i][0];
+    int nh = 0, nm = 0;
+    for (int j : neighbours[i]) {
+      if (numbers[j] == 1)
+        ++nh;
+      if (imetal[j] != 0)
+        ++nm;
+    }
+    if (ati == 5)
+      dxi[i] += static_cast<double>(static_cast<float>(nh) * 0.015f);
+    if (ati == 6 && nn == 2 && itag[i] == 1)
+      dxi[i] = static_cast<double>(-0.15f);
+    if (ati == 6 && nn == 1 && numbers[ji] == 8 &&
+        static_cast<int>(neighbours[ji].size()) == 1)
+      dxi[ji] = static_cast<double>(0.15f);
+    if (ati == 8 && nn == 1 && piFlags[i] != 0 && numbers[ji] == 7 &&
+        piFlags[ji] != 0)
+      dxi[i] = static_cast<double>(0.05f);
+    if (ati == 8 && nn == 2 && nh == 2)
+      dxi[i] = static_cast<double>(-0.02f);
+    if (group[ati - 1] == 6 && nn > 2)
+      dxi[i] += static_cast<double>(static_cast<float>(nn) * 0.005f);
+    if (ati == 8 || ati == 16)
+      dxi[i] -= static_cast<double>(static_cast<float>(nh) * 0.005f);
+    if (group[ati - 1] == 7 && ati > 9 && nn > 1) {
+      if (nm == 0)
+        dxi[i] -= static_cast<double>(static_cast<float>(nn) * 0.021f);
+      else
+        dxi[i] += static_cast<double>(static_cast<float>(nn) * 0.05f);
+    }
+  }
+  return true;
+}
+
+bool eeqInitialParams(int n, const std::vector<int>& numbers,
+                      const std::vector<double>& chi,
+                      const std::vector<double>& gam,
+                      const std::vector<double>& alp,
+                      const std::vector<double>& cnf,
+                      const std::vector<int>& imetal,
+                      const std::vector<int>& counts, double cnMax,
+                      double mchiShift, const std::vector<double>& dxi,
+                      std::vector<double>& chieeq,
+                      std::vector<double>& gameeq,
+                      std::vector<double>& alpeeq, Environment& env)
+{
+  if (n <= 0) {
+    env.error("empty EEQ param setup", "eeqInitialParams");
+    return false;
+  }
+  chieeq.assign(n, 0.0);
+  gameeq.assign(n, 0.0);
+  alpeeq.assign(n, 0.0);
+  for (int i = 0; i < n; ++i) {
+    int ati = numbers[i];
+    double dum = std::min(static_cast<double>(counts[i]), cnMax);
+    chieeq[i] = -chi[ati - 1] + dxi[i] + cnf[ati - 1] * std::sqrt(dum);
+    gameeq[i] = gam[ati - 1];
+    if (imetal[i] == 2)
+      chieeq[i] = chieeq[i] - mchiShift;
+    alpeeq[i] = alp[ati - 1] * alp[ati - 1];
+  }
+  return true;
+}
+
+bool eeqGammaCorrections(
+  int n, const std::vector<int>& numbers, const std::vector<int>& hyb,
+  const std::vector<int>& imetal, const std::vector<int>& piFlags,
+  const std::vector<std::vector<int>>& neighbours, const int* group,
+  const std::vector<double>& qa, std::vector<double>& dgam,
+  Environment& env)
+{
+  if (n <= 0) {
+    env.error("empty EEQ gamma setup", "eeqGammaCorrections");
+    return false;
+  }
+  dgam.assign(n, 0.0);
+  for (int i = 0; i < n; ++i) {
+    int ati = numbers[i];
+    double ff = 0.0;
+    if (ati == 1)
+      ff = static_cast<double>(-0.08f);
+    if (ati == 5)
+      ff = static_cast<double>(-0.05f);
+    if (ati == 6) {
+      ff = static_cast<double>(-0.27f);
+      if (hyb[i] < 3)
+        ff = static_cast<double>(-0.45f);
+      if (hyb[i] < 2)
+        ff = static_cast<double>(-0.34f);
+    }
+    if (ati == 7) {
+      ff = static_cast<double>(-0.13f);
+      if (piFlags[i] != 0)
+        ff = static_cast<double>(-0.14f);
+      if (isAmide(n, numbers, hyb, neighbours, piFlags, i))
+        ff = static_cast<double>(-0.16f);
+    }
+    if (ati == 8) {
+      ff = static_cast<double>(-0.15f);
+      if (hyb[i] < 3)
+        ff = static_cast<double>(-0.08f);
+    }
+    if (ati == 9)
+      ff = static_cast<double>(0.10f);
+    if (ati > 10)
+      ff = static_cast<double>(-0.02f);
+    if (ati == 17)
+      ff = static_cast<double>(-0.02f);
+    if (ati == 35)
+      ff = static_cast<double>(-0.11f);
+    if (ati == 53)
+      ff = static_cast<double>(-0.07f);
+    if (imetal[i] == 1)
+      ff = static_cast<double>(-0.08f);
+    if (imetal[i] == 2)
+      ff = static_cast<double>(-0.9f);
+    if (group[ati - 1] == 8)
+      ff = 0.0;
+    dgam[i] = qa[i] * ff;
+  }
+  return true;
+}
+
+bool eeqFinalParams(int n, const std::vector<int>& numbers,
+                    const std::vector<int>& hyb,
+                    const std::vector<int>& imetal,
+                    const std::vector<int>& piFlags,
+                    const std::vector<std::vector<int>>& neighbours,
+                    const std::vector<double>& chi,
+                    const std::vector<double>& gam,
+                    const std::vector<double>& alp,
+                    const std::vector<double>& dxi,
+                    const std::vector<double>& dgam,
+                    const std::vector<double>& qa, const int* group,
+                    std::vector<double>& chieeq,
+                    std::vector<double>& gameeq, std::vector<double>& alpeeq,
+                    Environment& env)
+{
+  if (n <= 0) {
+    env.error("empty EEQ final setup", "eeqFinalParams");
+    return false;
+  }
+  chieeq.assign(n, 0.0);
+  gameeq.assign(n, 0.0);
+  alpeeq.assign(n, 0.0);
+  for (int i = 0; i < n; ++i) {
+    int ati = numbers[i];
+    chieeq[i] = -chi[ati - 1] + dxi[i];
+    gameeq[i] = gam[ati - 1] + dgam[i];
+    if (isAmideHydrogen(n, numbers, hyb, neighbours, piFlags, i))
+      chieeq[i] = chieeq[i] - static_cast<double>(0.02f);
+    double ff = 0.0;
+    if (ati == 6)
+      ff = static_cast<double>(0.09f);
+    if (ati == 7)
+      ff = static_cast<double>(-0.21f);
+    if (group[ati - 1] == 6)
+      ff = static_cast<double>(-0.03f);
+    if (group[ati - 1] == 7)
+      ff = static_cast<double>(0.50f);
+    if (imetal[i] == 1)
+      ff = static_cast<double>(0.3f);
+    if (imetal[i] == 2)
+      ff = static_cast<double>(-0.1f);
+    double a = alp[ati - 1] + ff * qa[i];
+    alpeeq[i] = a * a;
+  }
+  return true;
+}
+
 } // namespace Xtb
 } // namespace Avogadro
